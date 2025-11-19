@@ -31,13 +31,13 @@ För att bygga paketet med colcon:
 
 ```bash
 cd /home/emil/husky_sim/husky_ws
-colcon build --packages-select yolo_gnn_refiner
+colcon build --packages-select object_detector_husky
 ```
 
 För att bygga med symlink-install (för utveckling):
 
 ```bash
-colcon build --symlink-install --packages-select yolo_gnn_refiner
+colcon build --symlink-install --packages-select object_detector_husky
 ```
 
 Efter bygget, källan till workspace:
@@ -50,18 +50,18 @@ source install/setup.bash
 
 ### Köra med ROS2 launch
 
-För att köra yolo_gnn_refiner med ROS2 launch:
+För att köra object_detector_husky med ROS2 launch:
 
 ```bash
-ros2 launch yolo_gnn_refiner yolo_gnn_refiner.launch.py
+ros2 launch object_detector_husky object_detector_husky.launch.py
 ```
 
 Du kan också ange argument för att anpassa körningen:
 
 ```bash
-ros2 launch yolo_gnn_refiner yolo_gnn_refiner.launch.py \
+ros2 launch object_detector_husky object_detector_husky.launch.py \
   mode:=train_detect \
-  model:=yolov8n.pt \
+  model:=weights.pt \
   train_dir:=/path/to/train/images \
   train_annot:=/path/to/train/annotations \
   test_dir:=/path/to/test/images \
@@ -73,7 +73,7 @@ ros2 launch yolo_gnn_refiner yolo_gnn_refiner.launch.py \
 ### Tillgängliga launch-argument
 
 - `mode`: Körläge - `train`, `detect`, eller `train_detect` (standard: `train_detect`)
-- `model`: Sökväg till YOLO-modell (.pt-fil) (standard: `yolov8n.pt`)
+- `model`: Sökväg till modell (.pt-fil) (standard: `weights.pt`)
 - `train_dir`: Sökväg till träningsbilder
 - `train_annot`: Sökväg till träningsannoteringar
 - `test_dir`: Sökväg till testbilder
@@ -86,27 +86,27 @@ ros2 launch yolo_gnn_refiner yolo_gnn_refiner.launch.py \
 Du kan också köra skriptet direkt:
 
 ```bash
-ros2 run yolo_gnn_refiner yolo_gnn_refiner --mode train_detect --model yolov8n.pt [andra argument...]
+ros2 run object_detector_husky object_detector_husky --mode train_detect --model weights.pt [andra argument...]
 ```
 
 ## Projektstruktur
 
 ```
-yolo_gnn_refiner/
+object_detector_husky/
 ├── CMakeLists.txt          # CMake-konfiguration
 ├── package.xml             # ROS2 paketdefinition
 ├── setup.py                # Python package setup
 ├── setup.cfg               # Setuptools konfiguration
 ├── README.md               # Denna fil
 ├── launch/                 # Launch-filer
-│   └── yolo_gnn_refiner.launch.py
-├── yolo_gnn_refiner/       # Python-paket
+│   └──object_detector_husky.launch.py
+├── object_detector_husky/       # Python-paket
 │   ├── __init__.py
-│   └── yolo_gnn_refiner.py # Huvudskript
+│   └── object_detector_husky.py # Huvudskript
 ├── weights/                # YOLO-vikter
-│   └── yolov8n.pt
+│   └── weights.pt
 ├── resource/               # ROS2 resource-fil
-│   └── yolo_gnn_refiner
+│   └── object_detector_husky
 └── test/                   # Test-filer
     ├── test_copyright.py
     ├── test_flake8.py
@@ -118,7 +118,7 @@ yolo_gnn_refiner/
 För en fullständig lista över alla tillgängliga kommandoradsargument, kör:
 
 ```bash
-ros2 run yolo_gnn_refiner yolo_gnn_refiner --help
+ros2 run object_detector_husky object_detector_husky --help
 ```
 
 ## Noteringar
@@ -137,4 +137,4 @@ TODO: Licensdeklaration
 
 ## Författare
 
-emil
+vahab
