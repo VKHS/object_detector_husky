@@ -1,4 +1,4 @@
-# yolo_gnn_refiner
+# object_detector_husky
 
 object detector husky - Ett ROS2-paket för förbättring av bounding boxes från YOLO-detektioner med hjälp av Graph Neural Networks (GNN).
 
