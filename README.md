@@ -23,31 +23,6 @@ Detta paket implementerar en metod för att förbättra YOLO-detektioner genom a
 - OpenCV
 - NumPy
 
-## Installation
-
-### Bygga paketet
-
-För att bygga paketet med colcon:
-
-```bash
-cd /home/emil/husky_sim/husky_ws
-colcon build --packages-select object_detector_husky
-```
-
-För att bygga med symlink-install (för utveckling):
-
-```bash
-colcon build --symlink-install --packages-select object_detector_husky
-```
-
-Efter bygget, källan till workspace:
-
-```bash
-source install/setup.bash
-```
-
-## Användning
-
 ### Köra med ROS2 launch
 
 För att köra object_detector_husky med ROS2 launch:
