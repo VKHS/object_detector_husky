@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+title: "object_detector_husky: graph neural network refinement of frozen YOLOv8 detections for ROS 2"
+authors:
+  - family-names: "Khalili Sadaghiani"
+    given-names: "Abdolvahab"
+    email: "abdolvahab.khalili.sadaghiani@liu.se"
+    affiliation: "Department of Electrical Engineering, Linköping University, Linköping, Sweden"
+    orcid: "https://orcid.org/0000-0003-4870-2768"
+repository-code: "https://github.com/VKHS/object_detector_husky"
+license: Apache-2.0
+abstract: >-
+  A ROS 2 (ament_python) package that refines the bounding boxes of a frozen
+  YOLOv8 detector with a lightweight graph neural network. The top-N detections
+  of an image become graph nodes, IoU and k-nearest-neighbour edges weighted by
+  overlap and centre distance connect them, and a GCN predicts an additive
+  corner correction for every box. Only the GNN, its feature MLP and a class
+  embedding are trained, with a Smooth-L1 loss on greedily matched ground truth.
+keywords:
+  - object detection
+  - bounding-box refinement
+  - graph neural networks
+  - YOLOv8
+  - ROS 2

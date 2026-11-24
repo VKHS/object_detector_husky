@@ -1,0 +1,26 @@
+object_detector_husky
+Copyright 2025-2026 Abdolvahab Khalili Sadaghiani
+ORCID: https://orcid.org/0000-0003-4870-2768
+
+Licensed under the Apache License, Version 2.0 (see LICENSE), except for
+the third-party material listed below.
+
+Third-party material in this repository
+---------------------------------------
+weights/weights.pt
+    COCO-pretrained YOLOv8n checkpoint published by Ultralytics.
+    Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0),
+    https://ultralytics.com/license. The Apache-2.0 license of this
+    repository does not apply to this file.
+
+test/test_copyright.py, test/test_flake8.py, test/test_pep257.py
+    ament linter test stubs, Copyright Open Source Robotics Foundation, Inc.,
+    Apache License 2.0.
+
+Runtime dependencies (installed separately, not distributed here)
+-----------------------------------------------------------------
+ultralytics                AGPL-3.0
+PyTorch                    BSD-3-Clause
+PyTorch Geometric          MIT
+OpenCV                     Apache-2.0
+NumPy                      BSD-3-Clause
