@@ -1,71 +1,63 @@
-import os
+# Copyright 2025-2026 Abdolvahab Khalili Sadaghiani
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Launch the YOLO -> GNN box refiner of object_detector_husky."""
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, TextSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """
-    Launch-fil för yolo_gnn_refiner.
-    
-    Detta startar yolo_gnn_refiner med konfigurerbara argument.
-    """
-    
-    # Launch arguments
-    mode_arg = DeclareLaunchArgument(
-        'mode',
-        default_value=TextSubstitution(text='train_detect'),
-        description='Körläge: train, detect, eller train_detect'
-    )
-    
-    model_arg = DeclareLaunchArgument(
-        'model',
-        default_value=TextSubstitution(text='yolov8n.pt'),
-        description='Sökväg till YOLO-modell (.pt-fil)'
-    )
-    
-    train_dir_arg = DeclareLaunchArgument(
-        'train_dir',
-        default_value=TextSubstitution(text='/proj/vahabkhalili/users/x_abdkh/coco_data_auto/train2017'),
-        description='Sökväg till träningsbilder'
-    )
-    
-    train_annot_arg = DeclareLaunchArgument(
-        'train_annot',
-        default_value=TextSubstitution(text='/proj/vahabkhalili/users/x_abdkh/coco_data_auto/train2017'),
-        description='Sökväg till träningsannoteringar'
-    )
-    
-    test_dir_arg = DeclareLaunchArgument(
-        'test_dir',
-        default_value=TextSubstitution(text='/proj/vahabkhalili/users/x_abdkh/test_results'),
-        description='Sökväg till testbilder'
-    )
-    
-    out_dir_arg = DeclareLaunchArgument(
-        'out_dir',
-        default_value=TextSubstitution(text='/proj/vahabkhalili/users/x_abdkh/test_results_COCO'),
-        description='Utdatamapp för resultat'
-    )
-    
-    epochs_arg = DeclareLaunchArgument(
-        'epochs',
-        default_value=TextSubstitution(text='5'),
-        description='Antal träningsepoker'
-    )
-    
-    device_arg = DeclareLaunchArgument(
-        'device',
-        default_value=TextSubstitution(text='cuda'),
-        description='Enhet att köra på: cuda eller cpu'
-    )
-    
-    # Node som kör yolo_gnn_refiner
-    yolo_gnn_refiner_node = Node(
-        package='yolo_gnn_refiner',
-        executable='yolo_gnn_refiner',
-        name='yolo_gnn_refiner',
+    """Declare the launch arguments and start the refiner executable."""
+    bundled_weights = PathJoinSubstitution(
+        [FindPackageShare('object_detector_husky'), 'weights', 'weights.pt'])
+
+    arguments = [
+        DeclareLaunchArgument(
+            'mode', default_value='train_detect',
+            description='Run mode: train, detect or train_detect'),
+        DeclareLaunchArgument(
+            'model', default_value=bundled_weights,
+            description='YOLO weights (.pt); default: the bundled COCO YOLOv8n'),
+        DeclareLaunchArgument(
+            'train_dir',
+            default_value='/proj/vahabkhalili/users/x_abdkh/coco_data_auto/train2017',
+            description='Folder with the training images'),
+        DeclareLaunchArgument(
+            'train_annot',
+            default_value='/proj/vahabkhalili/users/x_abdkh/coco_data_auto/train2017',
+            description='Folder with the YOLO .txt labels of the training images'),
+        DeclareLaunchArgument(
+            'test_dir', default_value='/proj/vahabkhalili/users/x_abdkh/test_results',
+            description='Folder with the images to detect on'),
+        DeclareLaunchArgument(
+            'out_dir', default_value='/proj/vahabkhalili/users/x_abdkh/test_results_COCO',
+            description='Output folder (config, cache, checkpoint, annotated images)'),
+        DeclareLaunchArgument(
+            'epochs', default_value='5',
+            description='Number of training epochs'),
+        DeclareLaunchArgument(
+            'device', default_value='cuda',
+            description='Device: cuda or cpu'),
+    ]
+
+    refiner = Node(
+        package='object_detector_husky',
+        executable='object_detector_husky',
+        name='object_detector_husky',
         output='screen',
         emulate_tty=True,
         arguments=[
@@ -77,18 +69,7 @@ def generate_launch_description():
             '--out_dir', LaunchConfiguration('out_dir'),
             '--epochs', LaunchConfiguration('epochs'),
             '--device', LaunchConfiguration('device'),
-        ]
+        ],
     )
-    
-    return LaunchDescription([
-        mode_arg,
-        model_arg,
-        train_dir_arg,
-        train_annot_arg,
-        test_dir_arg,
-        out_dir_arg,
-        epochs_arg,
-        device_arg,
-        yolo_gnn_refiner_node,
-    ])
 
+    return LaunchDescription(arguments + [refiner])

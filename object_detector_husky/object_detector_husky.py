@@ -1,5 +1,25 @@
 #!/usr/bin/env python3
+# Copyright 2025-2026 Abdolvahab Khalili Sadaghiani
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""YOLO (frozen) -> GNN bounding-box refiner.
 
+The detections of a frozen Ultralytics YOLO model become the nodes of a
+weighted graph (IoU and k-nearest-neighbour edges).  A small graph neural
+network predicts an additive correction (dx1, dy1, dx2, dy2) for every box and
+is trained with a Smooth-L1 loss against YOLO-format ground truth.  Only the
+GNN, its feature MLP and the class embedding are trained.
+"""
 
 import os
 import sys
@@ -9,8 +29,7 @@ import time
 import random
 import pickle
 import argparse
-import subprocess
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import cv2
@@ -18,23 +37,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# -------------------- Ultralytics YOLO ----------------------------------------
+# -------------------- Ultralytics YOLO and PyTorch Geometric -----------------
+# Not installed at run time: on Ubuntu 24.04 / ROS 2 Jazzy the system Python is
+# externally managed and a silent "pip install" fails.  See README.md.
 try:
     from ultralytics import YOLO
-except ImportError:
-    print("[INFO] 'ultralytics' not found. Installing...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "ultralytics"])
-    from ultralytics import YOLO
-
-# -------------------- PyTorch Geometric ---------------------------------------
-try:
     from torch_geometric.nn import GCNConv, GraphConv
-    from torch_geometric.data import Data
-except ImportError:
-    print("[INFO] 'torch_geometric' not found. Installing...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "torch_geometric"])
-    from torch_geometric.nn import GCNConv, GraphConv
-    from torch_geometric.data import Data
+except ImportError as exc:
+    raise ImportError(
+        f"Missing Python package '{exc.name or exc}'. Install it in the Python "
+        "environment that runs ROS 2, e.g. 'pip install ultralytics torch_geometric' "
+        "(see README.md, Installation).") from exc
 
 
 # =============================== Utilities ====================================
@@ -120,6 +133,53 @@ def clip_boxes_xyxy(boxes_np: np.ndarray, W: int, H: int) -> np.ndarray:
     return boxes_np
 
 
+def strip_ros_args(argv: List[str]) -> List[str]:
+    """Remove the '--ros-args ... [--]' blocks that ROS 2 launch appends."""
+    out, in_ros = [], False
+    for a in argv:
+        if a == "--ros-args":
+            in_ros = True
+        elif in_ros and a == "--":
+            in_ros = False
+        elif not in_ros:
+            out.append(a)
+    return out
+
+
+def resolve_model_path(model: str) -> str:
+    """
+    Find the YOLO weights given by --model.
+    Order: the path as given; <share>/object_detector_husky/weights/<name> of the
+    installed package; weights/<name> of a source checkout.  Anything not found
+    is returned unchanged (Ultralytics downloads official names such as yolov8n.pt).
+    """
+    if os.path.isfile(model):
+        return model
+    name = os.path.basename(model)
+    candidates = []
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        candidates.append(os.path.join(
+            get_package_share_directory("object_detector_husky"), "weights", name))
+    except Exception:  # not in a ROS 2 environment, or the package is not installed
+        pass
+    src_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates.append(os.path.join(src_root, "weights", name))
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return model
+
+
+def class_name(names, idx: int) -> str:
+    """Class name from a YOLO 'names' dict or list; 'C<idx>' if unknown."""
+    if isinstance(names, dict) and idx in names:
+        return str(names[idx])
+    if isinstance(names, (list, tuple)) and 0 <= idx < len(names):
+        return str(names[idx])
+    return f"C{idx}"
+
+
 # ========================= Graph construction (weighted) =======================
 
 def centers_wh_from_boxes(boxes: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -156,7 +216,7 @@ def build_weighted_graph(boxes_t: torch.Tensor, H: int, W: int,
     for i in range(N):
         row_dists = []
         for j in range(N):
-            if i == j: 
+            if i == j:
                 continue
             dx = cx[i] - cx[j]; dy = cy[i] - cy[j]
             dist = math.sqrt(dx * dx + dy * dy)
@@ -304,7 +364,8 @@ class GNNRefiner(nn.Module):
 # ============================= Caching YOLO outputs ============================
 
 def run_yolo_and_cache(yolo: YOLO, img_paths: List[str], device: str,
-                       cache_path: str, cap_nodes: int, conf_thr_keep: float = 0.0) -> Dict[str, dict]:
+                       cache_path: Optional[str], cap_nodes: int,
+                       conf_thr_keep: float = 0.0) -> Dict[str, dict]:
     """
     Runs YOLO on img_paths and caches results as:
       cache[img_path] = {
@@ -314,12 +375,14 @@ def run_yolo_and_cache(yolo: YOLO, img_paths: List[str], device: str,
         "labels": torch.LongTensor [N]
       }
     Keeps top-N by score; filters scores < conf_thr_keep if >0.
+    cache_path=None keeps the cache in memory only (nothing read or written).
     """
-    if os.path.exists(cache_path):
+    if cache_path and os.path.exists(cache_path):
         with open(cache_path, "rb") as f:
             cache = pickle.load(f)
         # Sanity: filter out images not in current list
-        cache = {k: v for k, v in cache.items() if k in img_paths}
+        wanted = set(img_paths)
+        cache = {k: v for k, v in cache.items() if k in wanted}
         print(f"[CACHE] Loaded {len(cache)} entries from {cache_path}")
     else:
         cache = {}
@@ -334,7 +397,7 @@ def run_yolo_and_cache(yolo: YOLO, img_paths: List[str], device: str,
         if im is None:
             continue
         H, W = im.shape[:2]
-        res = yolo(p, device=device)[0]
+        res = yolo(p, device=device, verbose=False)[0]
         boxes = res.boxes.xyxy.cpu()
         scores = res.boxes.conf.cpu()
         labels = res.boxes.cls.cpu().long()
@@ -357,10 +420,11 @@ def run_yolo_and_cache(yolo: YOLO, img_paths: List[str], device: str,
             print(f"  cached {idx}/{len(to_do)}")
 
     # Save cache
-    safe_makedirs(os.path.dirname(cache_path))
-    with open(cache_path, "wb") as f:
-        pickle.dump(cache, f)
-    print(f"[CACHE] Saved YOLO cache => {cache_path} (size: {len(cache)})")
+    if cache_path:
+        safe_makedirs(os.path.dirname(cache_path))
+        with open(cache_path, "wb") as f:
+            pickle.dump(cache, f)
+        print(f"[CACHE] Saved YOLO cache => {cache_path} (size: {len(cache)})")
     return cache
 
 
@@ -522,7 +586,7 @@ def evaluate(refiner: GNNRefiner, yolo_cache: Dict[str, dict], annot_dir: str, d
 @torch.no_grad()
 def detect_and_save(refiner: GNNRefiner, yolo: YOLO, img_dir: str, out_dir: str, device: str,
                     cap_nodes: int, score_thr_draw: float,
-                    iou_thr_graph: float, knn: int, alpha_iou: float):
+                    iou_thr_graph: float, knn: int, alpha_iou: float, names=None):
     safe_makedirs(out_dir)
     img_paths = list_images(img_dir)
     print(f"[DETECT] {len(img_paths)} images in {img_dir}")
@@ -532,7 +596,7 @@ def detect_and_save(refiner: GNNRefiner, yolo: YOLO, img_dir: str, out_dir: str,
         if im is None:
             continue
         H, W = im.shape[:2]
-        res = yolo(p, device=device)[0]
+        res = yolo(p, device=device, verbose=False)[0]
         boxes = res.boxes.xyxy.cpu()
         scores = res.boxes.conf.cpu()
         labels = res.boxes.cls.cpu().long()
@@ -557,12 +621,12 @@ def detect_and_save(refiner: GNNRefiner, yolo: YOLO, img_dir: str, out_dir: str,
         # draw refined
         out = im.copy()
         for (x1, y1, x2, y2), sc, lb in zip(refined, scores.numpy(), labels.numpy()):
-            if sc < score_thr_draw: 
+            if sc < score_thr_draw:
                 continue
             x1 = max(0, min(W - 1, x1)); y1 = max(0, min(H - 1, y1))
             x2 = max(0, min(W - 1, x2)); y2 = max(0, min(H - 1, y2))
             cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(out, f"C{int(lb)}:{sc:.2f}", (x1, max(0, y1 - 6)),
+            cv2.putText(out, f"{class_name(names, int(lb))}:{sc:.2f}", (x1, max(0, y1 - 6)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         cv2.imwrite(os.path.join(out_dir, os.path.basename(p)), out)
@@ -570,103 +634,141 @@ def detect_and_save(refiner: GNNRefiner, yolo: YOLO, img_dir: str, out_dir: str,
 
 # ================================== Main ======================================
 
-def main():
-    parser = argparse.ArgumentParser("YOLO (frozen) → GNN refiner (train only GNN)")
+def main(argv: Optional[List[str]] = None):
+    parser = argparse.ArgumentParser(
+        prog="object_detector_husky",
+        description="YOLO (frozen) -> GNN bounding-box refiner; only the GNN is trained.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     # Modes
     parser.add_argument("--mode", type=str, default="train_detect",
-                        choices=["train", "detect", "train_detect"])
+                        choices=["train", "detect", "train_detect"],
+                        help="train the refiner, detect with it, or both")
     # Paths
-    parser.add_argument("--model", type=str, default="weights.pt")
+    parser.add_argument("--model", type=str, default="weights.pt",
+                        help="YOLO weights; a bare file name is also looked up in the "
+                             "package's weights/ folder")
     parser.add_argument("--train_dir", type=str,
-                        default="/proj/vahabkhalili/users/x_abdkh/coco_data_auto/train2017")
+                        default="/proj/vahabkhalili/users/x_abdkh/coco_data_auto/train2017",
+                        help="training images (.jpg, .jpeg, .png)")
     parser.add_argument("--train_annot", type=str,
-                        default="/proj/vahabkhalili/users/x_abdkh/coco_data_auto/train2017")
+                        default="/proj/vahabkhalili/users/x_abdkh/coco_data_auto/train2017",
+                        help="YOLO .txt labels, one file per training image (same stem)")
     parser.add_argument("--val_split", type=float, default=0.05,
                         help="Fraction of train_dir used for validation (random split).")
     parser.add_argument("--test_dir", type=str,
-                        default="/proj/vahabkhalili/users/x_abdkh/test_results")
+                        default="/proj/vahabkhalili/users/x_abdkh/test_results",
+                        help="images to run the refined detector on")
     parser.add_argument("--out_dir", type=str,
-                        default="/proj/vahabkhalili/users/x_abdkh/test_results_COCO")
+                        default="/proj/vahabkhalili/users/x_abdkh/test_results_COCO",
+                        help="output folder: config, cache, checkpoint, annotated images")
+    parser.add_argument("--gnn_ckpt", type=str, default=None,
+                        help="GNN checkpoint written by training and read by detection "
+                             "(None: <out_dir>/best_weights.pt)")
     # Training
-    parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--weight_decay", type=float, default=1e-4)
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--seed", type=int, default=2024)
+    parser.add_argument("--epochs", type=int, default=5, help="training epochs")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Adam learning rate")
+    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Adam weight decay")
+    parser.add_argument("--device", type=str, default="cuda", help="cuda, cuda:N or cpu")
+    parser.add_argument("--seed", type=int, default=2024,
+                        help="seed of the train/val split, the initialisation and the order")
     parser.add_argument("--score_weighting", action="store_true",
                         help="Weight loss by mean YOLO confidence of matched nodes.")
     # Proposals / graph
-    parser.add_argument("--cap_nodes", type=int, default=20)
+    parser.add_argument("--cap_nodes", type=int, default=20,
+                        help="keep at most this many detections (graph nodes) per image")
     parser.add_argument("--conf_thr_keep", type=float, default=0.0,
                         help="If >0, drop YOLO proposals with score < thr before top-N.")
-    parser.add_argument("--iou_thr_graph", type=float, default=0.25)
-    parser.add_argument("--knn", type=int, default=5)
-    parser.add_argument("--alpha_iou", type=float, default=0.7)
+    parser.add_argument("--iou_thr_graph", type=float, default=0.25,
+                        help="IoU at or above which two detections get an IoU edge")
+    parser.add_argument("--knn", type=int, default=5,
+                        help="nearest neighbours (by box centre) linked to every node")
+    parser.add_argument("--alpha_iou", type=float, default=0.7,
+                        help="edge weight = alpha*IoU + (1-alpha)*exp(-distance/sigma)")
     # GNN sizing
-    parser.add_argument("--conv_type", type=str, default="gcn", choices=["gcn", "graph"])
-    parser.add_argument("--layers", type=int, default=3)
-    parser.add_argument("--in_channels", type=int, default=128)
-    parser.add_argument("--hidden_channels", type=int, default=128)
-    parser.add_argument("--out_channels", type=int, default=128)
-    parser.add_argument("--emb_dim", type=int, default=16)
-    parser.add_argument("--dropout", type=float, default=0.10)
-    parser.add_argument("--use_residual", action="store_true")
+    parser.add_argument("--conv_type", type=str, default="gcn", choices=["gcn", "graph"],
+                        help="GCNConv or GraphConv layers")
+    parser.add_argument("--layers", type=int, default=3, help="number of GNN layers (>= 2)")
+    parser.add_argument("--in_channels", type=int, default=128,
+                        help="width of the feature MLP output")
+    parser.add_argument("--hidden_channels", type=int, default=128,
+                        help="width of the hidden GNN layers")
+    parser.add_argument("--out_channels", type=int, default=128,
+                        help="width of the last GNN layer")
+    parser.add_argument("--emb_dim", type=int, default=16, help="size of the class embedding")
+    parser.add_argument("--dropout", type=float, default=0.10,
+                        help="dropout after every GNN layer but the last")
+    parser.add_argument("--use_residual", action="store_true",
+                        help="add the layer input to its output when the widths match")
     # Detection drawing
-    parser.add_argument("--score_thr_draw", type=float, default=0.5)
+    parser.add_argument("--score_thr_draw", type=float, default=0.5,
+                        help="draw refined boxes whose YOLO score is at least this")
     # Caching
-    parser.add_argument("--use_cache", action="store_true", help="Cache YOLO outputs for train/val.")
-    args = parser.parse_args()
+    parser.add_argument("--use_cache", action=argparse.BooleanOptionalAction, default=True,
+                        help="keep the YOLO outputs of train/val in <out_dir>/cache and "
+                             "reuse them; --no-use_cache keeps them in memory only")
+    args = parser.parse_args(strip_ros_args(sys.argv[1:] if argv is None else argv))
 
     set_seed(args.seed)
     safe_makedirs(args.out_dir)
+    model_path = resolve_model_path(args.model)
 
     # Persist config
     with open(os.path.join(args.out_dir, "config.json"), "w") as f:
-        json.dump(vars(args), f, indent=2)
+        json.dump(dict(vars(args), model_resolved=model_path), f, indent=2)
 
     # Load YOLO (frozen)
-    print(f"[INFO] Loading => {args.model}")
-    yolo = YOLO(args.model)
+    print(f"[INFO] Loading => {model_path}")
+    yolo = YOLO(model_path)
     yolo.to(args.device)
     yolo.eval()
     for p in yolo.model.parameters():
         p.requires_grad = False
+    try:
+        names = yolo.names
+    except Exception:
+        names = {}
+    num_classes = len(names) if names else 80
 
-    # Split train/val
-    all_imgs = list_images(args.train_dir)
-    if len(all_imgs) == 0:
-        print(f"[ERROR] No images in train_dir: {args.train_dir}")
-        sys.exit(1)
+    do_train = args.mode in ("train", "train_detect")
+    do_detect = args.mode in ("detect", "train_detect")
+    best_ckpt = args.gnn_ckpt or os.path.join(args.out_dir, "best_weights.pt")
 
-    random.shuffle(all_imgs)
-    n_val = max(1, int(len(all_imgs) * args.val_split))
-    val_imgs = sorted(all_imgs[:n_val])
-    train_imgs = sorted(all_imgs[n_val:])
+    if do_train:
+        # Split train/val
+        all_imgs = list_images(args.train_dir)
+        if len(all_imgs) == 0:
+            print(f"[ERROR] No images in train_dir: {args.train_dir}")
+            sys.exit(1)
 
-    print(f"[DATA] Train images: {len(train_imgs)} | Val images: {len(val_imgs)}")
+        random.shuffle(all_imgs)
+        n_val = max(1, int(len(all_imgs) * args.val_split))
+        val_imgs = sorted(all_imgs[:n_val])
+        train_imgs = sorted(all_imgs[n_val:])
 
-    # Build caches
-    cache_dir = os.path.join(args.out_dir, "cache")
-    safe_makedirs(cache_dir)
-    train_cache_path = os.path.join(cache_dir, "yolo_train.pkl")
-    val_cache_path = os.path.join(cache_dir, "yolo_val.pkl")
+        print(f"[DATA] Train images: {len(train_imgs)} | Val images: {len(val_imgs)}")
 
-    if args.use_cache:
+        # YOLO outputs for train/val: on disk and reused unless --no-use_cache.
+        # The file names carry everything that changes their content.
+        train_cache_path = val_cache_path = None
+        if args.use_cache:
+            cache_dir = os.path.join(args.out_dir, "cache")
+            safe_makedirs(cache_dir)
+            tag = (f"{os.path.splitext(os.path.basename(model_path))[0]}"
+                   f"_cap{args.cap_nodes}_conf{args.conf_thr_keep:g}")
+            train_cache_path = os.path.join(cache_dir, f"yolo_train_{tag}.pkl")
+            val_cache_path = os.path.join(cache_dir, f"yolo_val_{tag}.pkl")
+        else:
+            print("[WARN] --no-use_cache: YOLO runs over train/val on every start.")
         train_cache = run_yolo_and_cache(yolo, train_imgs, args.device, train_cache_path,
-                                         cap_nodes=args.cap_nodes, conf_thr_keep=args.conf_thr_keep)
+                                         cap_nodes=args.cap_nodes,
+                                         conf_thr_keep=args.conf_thr_keep)
         val_cache = run_yolo_and_cache(yolo, val_imgs, args.device, val_cache_path,
-                                       cap_nodes=args.cap_nodes, conf_thr_keep=args.conf_thr_keep)
-    else:
-        # Build minimal caches on the fly (no disk save)
-        print("[WARN] Running without cache: slower training. Use --use_cache to speed up.")
-        train_cache = run_yolo_and_cache(yolo, train_imgs, args.device, train_cache_path,
-                                         cap_nodes=args.cap_nodes, conf_thr_keep=args.conf_thr_keep)
-        val_cache = run_yolo_and_cache(yolo, val_imgs, args.device, val_cache_path,
-                                       cap_nodes=args.cap_nodes, conf_thr_keep=args.conf_thr_keep)
+                                       cap_nodes=args.cap_nodes,
+                                       conf_thr_keep=args.conf_thr_keep)
 
     # Build GNN refiner
     refiner = GNNRefiner(
-        num_classes=80,
+        num_classes=num_classes,
         conv_type=args.conv_type,
         layers=args.layers,
         in_channels=args.in_channels,
@@ -681,10 +783,9 @@ def main():
     optimizer = torch.optim.Adam(refiner.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     best_val = float("inf")
-    best_ckpt = os.path.join(args.out_dir, "best_weights.pt")
 
     # ------------------------------- TRAIN -----------------------------------
-    if args.mode in ("train", "train_detect"):
+    if do_train:
         print("[INFO] Start training...")
         for ep in range(1, args.epochs + 1):
             t0 = time.time()
@@ -705,15 +806,19 @@ def main():
             # Save best
             if val_loss < best_val:
                 best_val = val_loss
+                safe_makedirs(os.path.dirname(os.path.abspath(best_ckpt)))
                 torch.save(refiner.state_dict(), best_ckpt)
                 print(f"[CKPT] Saved best GNN checkpoint => {best_ckpt}")
 
     # ------------------------------- DETECT ----------------------------------
-    if args.mode in ("detect", "train_detect"):
-        # Load best if exists
-        if os.path.exists(best_ckpt):
-            refiner.load_state_dict(torch.load(best_ckpt, map_location=args.device))
-            print(f"[CKPT] Loaded best GNN checkpoint => {best_ckpt}")
+    if do_detect:
+        # An untrained refiner would add random offsets: require a checkpoint.
+        if not os.path.exists(best_ckpt):
+            print(f"[ERROR] No GNN checkpoint at {best_ckpt}. "
+                  "Train first (--mode train) or pass --gnn_ckpt.")
+            sys.exit(1)
+        refiner.load_state_dict(torch.load(best_ckpt, map_location=args.device))
+        print(f"[CKPT] Loaded best GNN checkpoint => {best_ckpt}")
         det_dir = os.path.join(args.out_dir, "detections_refined")
         print("[INFO] Running refined detection on test images...")
         detect_and_save(
@@ -726,7 +831,8 @@ def main():
             score_thr_draw=args.score_thr_draw,
             iou_thr_graph=args.iou_thr_graph,
             knn=args.knn,
-            alpha_iou=args.alpha_iou
+            alpha_iou=args.alpha_iou,
+            names=names
         )
         print(f"[INFO] Wrote refined detections to: {det_dir}")
 

@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>object_detector_husky</name>
+  <version>0.0.0</version>
+  <description>
+    Bounding-box refinement for a frozen YOLOv8 detector with a lightweight graph
+    neural network (GNN): detections become graph nodes, IoU and k-nearest-neighbour
+    edges connect them, and the GNN predicts a corner correction for every box.
+  </description>
+  <maintainer email="abdolvahab.khalili.sadaghiani@liu.se">Abdolvahab Khalili Sadaghiani</maintainer>
+  <license>Apache-2.0</license>
+
+  <url type="repository">https://github.com/VKHS/object_detector_husky</url>
+  <author email="abdolvahab.khalili.sadaghiani@liu.se">Abdolvahab Khalili Sadaghiani</author>
+
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <!-- PyTorch, PyTorch Geometric and Ultralytics are installed with pip (see README.md). -->
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

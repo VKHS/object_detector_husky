@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# colcon workspace folders (when the package is built in place)
+build/
+install/
+log/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
